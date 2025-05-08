@@ -47,18 +47,18 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.guava.await
 import java.util.concurrent.Executors
 
 @Composable
 fun CameraScreenRoot(
-    viewModel: CameraScreenViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    viewModel: CameraScreenViewModel = viewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     CameraScreen(
         state = state,
-        onTextDetected = viewModel::onTextDetected,
-        onButtonPressed = viewModel::isButtonPressed
+        onImageCaptured = viewModel::processImage
     )
 }
 
@@ -66,8 +66,7 @@ fun CameraScreenRoot(
 @Composable
 fun CameraScreen(
     state: CameraScreenState,
-    onTextDetected: (String) -> Unit,
-    onButtonPressed: (Boolean) -> Unit
+    onImageCaptured: (Bitmap) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -133,7 +132,7 @@ fun CameraScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        if (state.isButtonPressed) {
+        if (state.isLoading) {
             CircularProgressIndicator(modifier = Modifier.size(250.dp))
             Spacer(modifier = Modifier.height(50.dp))
             Text(state.displayedText)
@@ -165,29 +164,23 @@ fun CameraScreen(
                     }
                 }
             }
-
             Spacer(Modifier.height(50.dp))
-
             Button(onClick = {
-                onButtonPressed(true)
                 imageCaptureUseCase.takePicture(
                     mainExecutor,
                     object : ImageCapture.OnImageCapturedCallback() {
                         override fun onCaptureSuccess(imageProxy: ImageProxy) {
                             val bmp = imageProxy.toBitmap()
                             imageProxy.close()
-                            capturedBitmap = bmp
-
-                            val input = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
-                            com.google.mlkit.vision.text.TextRecognition
-                                .getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
-                                .process(input)
-                                .addOnSuccessListener { onTextDetected(it.text) }
-                                .addOnFailureListener { Log.e("OCR", "Failed", it) }
+                            onImageCaptured(bmp)
                         }
 
-                        override fun onError(exc: ImageCaptureException) {
-                            Log.e("CameraX", "Capture failed", exc)
+                        override fun onError(exception: ImageCaptureException) {
+                            Log.e(
+                                "CameraCapture",
+                                "Image capture failed: ${exception.message}",
+                                exception
+                            )
                         }
                     }
                 )

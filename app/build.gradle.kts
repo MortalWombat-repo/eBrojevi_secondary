@@ -57,7 +57,7 @@ dependencies {
     implementation ("androidx.camera:camera-view:1.4.2")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.6.2")
-
+    implementation ("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.6.4")
 
     //Viewmodel
     implementation(libs.lifecycle.viewmodel.compose)
