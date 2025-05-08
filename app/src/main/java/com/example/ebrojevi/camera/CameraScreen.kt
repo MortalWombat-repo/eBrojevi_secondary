@@ -2,22 +2,35 @@ package com.example.ebrojevi.camera
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.util.Log
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import android.view.OrientationEventListener
+import android.view.Surface
 import androidx.annotation.OptIn
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
-import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,136 +39,161 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.guava.await
+import java.util.concurrent.Executors
 
 @Composable
 fun CameraScreenRoot(
-    viewModel: CameraScreenViewModel = viewModel()
+    viewModel: CameraScreenViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    CameraScreenScreen(
+    CameraScreen(
         state = state,
-        onTextDetected = viewModel::onTextDetected
+        onTextDetected = viewModel::onTextDetected,
+        onButtonPressed = viewModel::isButtonPressed
     )
 }
 
 @OptIn(ExperimentalGetImage::class)
 @Composable
-fun CameraScreenScreen(
+fun CameraScreen(
     state: CameraScreenState,
-    onTextDetected: (String) -> Unit
+    onTextDetected: (String) -> Unit,
+    onButtonPressed: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val mainExecutor = ContextCompat.getMainExecutor(context)
+    Executors.newSingleThreadExecutor()
 
-    var hasCameraPermission by remember {
+    var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var hasPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                     PackageManager.PERMISSION_GRANTED
         )
     }
 
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasCameraPermission = granted
-        if (!granted) {
-            Log.e("Camera", "Camera permission denied")
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        if (!hasCameraPermission) {
-            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-        }
-    }
-
     val previewUseCase = remember { Preview.Builder().build() }
-    val analysisUseCase = remember {
-        ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+    val imageCaptureUseCase = remember {
+        ImageCapture.Builder()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
             .build()
-            .also { analyzer ->
-                analyzer.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
-                    val mediaImage = imageProxy.image
-                    if (mediaImage != null) {
-                        val inputImage = InputImage.fromMediaImage(
-                            mediaImage,
-                            imageProxy.imageInfo.rotationDegrees
+    }
+
+    val previewView = remember {
+        PreviewView(context).apply {
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+        }
+    }
+
+    DisposableEffect(context) {
+        val listener = object : OrientationEventListener(context) {
+            override fun onOrientationChanged(angle: Int) {
+                val rotation = when (angle) {
+                    in 45 until 135 -> Surface.ROTATION_270
+                    in 135 until 225 -> Surface.ROTATION_180
+                    in 225 until 315 -> Surface.ROTATION_90
+                    else -> Surface.ROTATION_0
+                }
+                previewUseCase.targetRotation = rotation
+                imageCaptureUseCase.targetRotation = rotation
+            }
+        }
+        listener.enable()
+        onDispose { listener.disable() }
+    }
+
+    LaunchedEffect(hasPermission, previewView) {
+        if (!hasPermission) return@LaunchedEffect
+
+        val cameraProvider = ProcessCameraProvider.getInstance(context).await()
+        cameraProvider.unbindAll()
+
+        cameraProvider.bindToLifecycle(
+            lifecycleOwner,
+            CameraSelector.DEFAULT_BACK_CAMERA,
+            previewUseCase,
+            imageCaptureUseCase
+        )
+        previewUseCase.surfaceProvider = previewView.surfaceProvider
+    }
+
+    Column(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        if (state.isButtonPressed) {
+            CircularProgressIndicator(modifier = Modifier.size(250.dp))
+            Spacer(modifier = Modifier.height(50.dp))
+            Text(state.displayedText)
+        } else {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(650.dp)
+            ) {
+                AndroidView(
+                    factory = { previewView },
+                    modifier = Modifier.matchParentSize()
+                )
+
+                capturedBitmap?.let { bmp ->
+                    val ratio = if (bmp.width < bmp.height) 3f / 4f else 4f / 3f
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .aspectRatio(ratio)
+                            .background(Color.Black.copy(alpha = 0.3f))
+                    ) {
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier.matchParentSize(),
+                            contentScale = ContentScale.Fit
                         )
-                        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                        recognizer.process(inputImage)
-                            .addOnSuccessListener { visionText ->
-                                onTextDetected(visionText.text)
-                            }
-                            .addOnFailureListener { e ->
-                                Log.e("TextRecognition", "Text recognition failed", e)
-                            }
-                            .addOnCompleteListener {
-                                imageProxy.close()
-                            }
-                    } else {
-                        imageProxy.close()
                     }
                 }
             }
-    }
 
-    if (hasCameraPermission) {
-        LaunchedEffect(previewUseCase, analysisUseCase) {
-            val cameraProvider = ProcessCameraProvider.getInstance(context).await()
-            try {
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    lifecycleOwner,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                    previewUseCase,
-                    analysisUseCase
-                )
-            } catch(ex: Exception) {
-                Log.e("Camera", "Camera binding failed", ex)
-            }
-        }
-    }
+            Spacer(Modifier.height(50.dp))
 
-    Box(Modifier.fillMaxSize()) {
-        if (hasCameraPermission) {
-            AndroidView(
-                factory = { ctx ->
-                    PreviewView(ctx).apply {
-                        scaleType = PreviewView.ScaleType.FILL_CENTER
-                        implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-                        previewUseCase.surfaceProvider = surfaceProvider
+            Button(onClick = {
+                onButtonPressed(true)
+                imageCaptureUseCase.takePicture(
+                    mainExecutor,
+                    object : ImageCapture.OnImageCapturedCallback() {
+                        override fun onCaptureSuccess(imageProxy: ImageProxy) {
+                            val bmp = imageProxy.toBitmap()
+                            imageProxy.close()
+                            capturedBitmap = bmp
+
+                            val input = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
+                            com.google.mlkit.vision.text.TextRecognition
+                                .getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+                                .process(input)
+                                .addOnSuccessListener { onTextDetected(it.text) }
+                                .addOnFailureListener { Log.e("OCR", "Failed", it) }
+                        }
+
+                        override fun onError(exc: ImageCaptureException) {
+                            Log.e("CameraX", "Capture failed", exc)
+                        }
                     }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Text(
-                text = "Camera permission required",
-                modifier = Modifier.align(Alignment.Center)
-            )
-        }
-
-        if (state.recognizedText.isNotBlank()) {
-            Text(
-                text = state.recognizedText,
-                color = Color.White,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(8.dp)
-            )
+                )
+            }) {
+                Text("SNAP!")
+            }
         }
     }
 }
